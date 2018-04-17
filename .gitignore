@@ -1,0 +1,12 @@
+MP3.pdf
+mp[1-9].mod.o
+mp[1-9].ko
+modules.order
+.mp[1-9].ko.cmd
+mp[1-9].mod.c
+.mp[1-9].mod.o.cmd
+.mp[1-9].o.cmd
+.tmp_versions
+userapp
+Module.symvers
+mp[1-9].o

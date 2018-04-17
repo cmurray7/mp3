@@ -7,7 +7,7 @@ RM:=rm
 
 .PHONY : clean
 
-all: clean modules app
+all: clean modules work monitor
 
 obj-m:= mp3.o
 
@@ -16,8 +16,9 @@ modules:
 
 work: work.c
 	$(GCC) -o work work.c
+
 monitor: monitor.c
-	$(gcc) -o monitor monitor.c
+	$(GCC) -o monitor monitor.c
 
 clean:
 	$(RM) -f userapp *~ *.ko *.o *.mod.c Module.symvers modules.order

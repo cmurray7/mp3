@@ -1,9 +1,12 @@
+#define LINUX
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/uaccess.h>
 #include <linux/proc_fs.h>
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
-#include "mp3_given.h"
+//#include "mp3_given.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Group_ID");
@@ -24,7 +27,7 @@ struct mp3_task_struct{
 	unsigned long major_faults;
 	unsigned long minor_faults;
 	
-}
+};
 
 /* structure initialization */
 static struct proc_dir_entry *proc_dir;
@@ -32,7 +35,7 @@ static struct proc_dir_entry *proc_entry;
 
 
 
-void mp2_register_process(char *buf)
+void mp3_register_process(char *buf)
 {
 	printk(KERN_INFO "calling mp3_register_process\n");
 }
@@ -49,7 +52,7 @@ ssize_t mp3_read(struct file *file, char __user *buffer, size_t count, loff_t *d
    	is called. */
 
 	static int copied = 0;
-	printf("inside mp3 read function\n");
+	printk(KERN_INFO "inside mp3 read function\n");
 	
 	return copied;
 }
@@ -100,11 +103,12 @@ int __init mp3_init(void)
 	}
 
 	// Create entry in just created directory
-	if ((proc_entry = proc_create(FILENAME, 066, proc_dir &mp3_file)) == NULL) {
+	if ((proc_entry = proc_create(FILENAME, 066, proc_dir, &mp3_file)) == NULL) {
 		remove_proc_entry(DIRECTORY, NULL);
 		return -ENOMEM;
 	}
 	printk(KERN_ALERT "MP2 MODULE LOADED\n");
+	return 0;
 }
 
 void __exit mp3_exit(void)

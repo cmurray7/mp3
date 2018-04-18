@@ -9,6 +9,7 @@
 #include <linux/sched.h>
 #include <linux/workqueue.h>
 #include <linux/cdev.h>
+#include <linux/mm.h>
 #include "mp3_given.h"
 
 MODULE_LICENSE("GPL");
@@ -130,7 +131,18 @@ static int mp3_release(struct inode *inode, struct file *filp){return 0;}
 
 static int mp3_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	printk(KERN_INFO "mmap called\n");
+	unsigned long pfn;
+	int page_no;
+
+	printk(KERN_INFO "MP3 MMAP\n");
+	for (page_no = 0; page_no < PAGENUMBER; page_no++) {
+		pfn = vmalloc_to_pfn((char *) (memory_buffer)+page_no*PAGESIZE);
+		if (remap_pfn_range(vma, (unsigned long) (vma->vm_start)+page_no*PAGESIZE, pfn, PAGE_SIZE, PAGE_SHARED)) {
+			printk(KERN_INFO "Remap fail\n");
+			return -1;
+		}
+	}
+	printk(KERN_INFO "MMAP Complete\n");
 	return 0;
 }
 

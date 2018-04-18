@@ -7,6 +7,7 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/sched.h>
+#include <linux/workqueue.h>
 #include "mp3_given.h"
 
 MODULE_LICENSE("GPL");
@@ -15,15 +16,15 @@ MODULE_DESCRIPTION("CS-423 MP3");
 
 #define DIRECTORY "mp3"
 #define FILENAME "status"
-#define BUFSIZE 128
 #define SHAREDBUFSIZE (1024*512)
 #define LONGSIZE (sizeof(long))
 #define PAGESIZE 4096
+#define PAGENUMBER 128
 
 #define REGISTRATION     'R'
 #define UNREGISTRATION   'U'
 
-typedef struct mp3_task_struct{
+typedef struct mp3_task_struct{	
 	
 	struct task_struct *task;
 	struct list_head task_node;
@@ -46,32 +47,26 @@ static struct list_head *pos, *q;
 
 
 // Work variables
+static void update_runtimes(struct work_struct *w);
+DECLARE_DELAYED_WORK(updater, update_runtimes);
 static struct workqueue_struct *queue;
+unsigned long delay;
+
+// Memory buffer variable
+unsigned long * memory_buffer;
 
 // Semaphore Lock
 static spinlock_t lock;
 
-//Time Interval Manager
-static unsigned long last_time = 0;
-
+/*
 //Initializes Work Queue
 static void _init_workqueue(void)
 {
   queue = create_workqueue("mp3_workqueue");
 }
+*/
 
-// Registers work
-static void _register_work(void)
-{
-	/*
-	struct delayed_work *work = (struct delayed_work *)kmalloc(sizeof(struct delayed_work), GFP_KERNEL);
-	if (work) {
-		INIT_DELAYED_WORK((struct delayed_work *) work, update_runtimes);
-		queue_delayed_work(queue, (struct delayed_work *) work, msecs_to_jiffies(50));
-	} */
-	printk(KERN_INFO "Registering Work\n");
-}
-
+/*
 // Deletes Work Queue
 static void _del_workqueue(void)
 {
@@ -85,34 +80,35 @@ static void _del_workqueue(void)
     printk(KERN_ALERT "DELETED WORKQUEUE\n");
   }
 }
-
-/**
- * Get Current Time in jiffies
- *
- * RETURN current time in jiffies
-**/
+*/
+/*
 static unsigned long _get_time(void){
    struct timeval time;
    do_gettimeofday(&time);
    return usecs_to_jiffies(time.tv_sec * 1000000L + time.tv_usec);
 }
+*/
 
-/*
-mp3_task_struct* _get_task_by_pid(unsigned int pid)
+static void update_runtimes(struct work_struct *w)
 {
-    	list_for_each_entry(tmp, &head, task_node) {
+	printk(KERN_INFO "Update runtimes worker called\n");	
+}
+
+static mp3_task_struct* _get_task_by_pid(unsigned int pid)
+{
+    	list_for_each_entry(tmp, &mp3_task_struct_list.task_node, task_node) {
         	if (tmp->pid == pid) {
             		return tmp;
         	}
     	}	
     	return NULL;
 }
-*/
+
 void mp3_register_process(char *buf)
 {
 	unsigned int pid;
 	sscanf(buf, "%u", &pid); 
-	printk(KERN_INFO "Registering process with pid, %d\n", pid);
+	printk(KERN_INFO "Registering process with pid, %u\n", pid);
 	
 	tmp = (mp3_task_struct *) kmalloc(sizeof(mp3_task_struct), GFP_KERNEL);
 	tmp->pid = pid;
@@ -123,19 +119,38 @@ void mp3_register_process(char *buf)
 
 	spin_lock(&lock);
 	list_add_tail(&(tmp->task_node), &(mp3_task_struct_list.task_node));
+
+        if (list_empty(&mp3_task_struct_list.task_node)) {
+                queue_delayed_work(queue, &updater, delay);
+		printk(KERN_INFO "First thing in list--new job added\n");
+        }
 	spin_unlock(&lock);
 
-	//TODO: call top half
-	// If list is empty, then you want to record the time start
-        if (list_empty(&mp3_task_struct_list.task_node)) {
-                last_time = _get_time();
-		_register_work();
-        }
+	printk(KERN_INFO "Completed registration\n");
+
 }
 
 void mp3_unregister_process(char *buf)
 {
-	printk(KERN_INFO "called mp3_unregister_process\n");
+	unsigned int pid;
+	mp3_task_struct* to_remove;
+        sscanf(buf, "%u", &pid); 
+	printk(KERN_INFO "Unregistering process with pid, %u\n", pid);
+
+	spin_lock(&lock);
+	to_remove = _get_task_by_pid(pid);
+	if (to_remove) {
+		list_del(&(to_remove->task_node));
+		kfree(to_remove);
+	}
+	spin_unlock(&lock);
+
+	if (list_empty(&mp3_task_struct_list.task_node)) {
+		cancel_delayed_work(&updater);
+		flush_workqueue(queue);
+		printk(KERN_INFO "List empty -> Workqueue has been flushed and delayed work cancelled\n"); 		
+	}
+
 }
 
 ssize_t mp3_read(struct file *file, char __user *buffer, size_t count, loff_t *data)
@@ -155,8 +170,8 @@ ssize_t mp3_read(struct file *file, char __user *buffer, size_t count, loff_t *d
 	}
 
 	spin_lock_irqsave(&lock, flags);
-	list_for_each_entry(tmp, &mp3_task_struct_list, task_node) {
-		copied += sprintf(buf + copied, "PID: %u\tCPU_Util: %u\tMajor: %u\tMinor: %u\n", tmp->pid, tmp->util, tmp->major_faults, tmp->minor_faults);
+	list_for_each_entry(tmp, &mp3_task_struct_list.task_node, task_node) {
+		copied += sprintf(buf + copied, "PID: %u\tCPU_Util: %lu\tMajor: %lu\tMinor: %lu\n", tmp->pid, tmp->util, tmp->major_faults, tmp->minor_faults);
 	}
 	spin_unlock_irqrestore(&lock, flags);
 	
@@ -205,6 +220,19 @@ int __init mp3_init(void)
 {
 	printk(KERN_ALERT "LOADING MP2 MODULE\n");
 	
+	// Allocate virtually continuous memory buffer
+	memory_buffer = (unsigned long*) vmalloc(PAGENUMBER * PAGESIZE);
+  	memset(memory_buffer, 0, PAGENUMBER * PAGESIZE);
+
+ 	// check if enough memory is successfully allocated
+  	if (!memory_buffer) {
+    		printk(KERN_ALERT "VMALLOC ERROR\n");
+  	}
+  	printk("mem_buf is %lx\n", memory_buffer);
+	if (memory_buffer==NULL) {
+		printk(KERN_INFO "Memory Buffer = NULL\n");	
+	}
+	
 	// Create directory in proc file system
 	if ((proc_dir = proc_mkdir(DIRECTORY, NULL)) == NULL) {
 		return -ENOMEM;
@@ -219,7 +247,8 @@ int __init mp3_init(void)
 	// Initialize spin lock, work queue
   	INIT_LIST_HEAD(&mp3_task_struct_list.task_node); 
 	spin_lock_init(&lock);
-	_init_workqueue();
+	queue = create_workqueue("mp3_workqueue");
+	delay = msecs_to_jiffies(50);
 
 	printk(KERN_ALERT "MP2 MODULE LOADED\n");
 	return 0;
@@ -233,7 +262,7 @@ void __exit mp3_exit(void)
 	remove_proc_entry(FILENAME, proc_dir);
    	remove_proc_entry(DIRECTORY, NULL);
 	
-
+	spin_lock(&lock);
 	// Frees mp_struct memory   
   	list_for_each_safe(pos, q, &mp3_task_struct_list.task_node)
 	{
@@ -241,9 +270,15 @@ void __exit mp3_exit(void)
 		list_del(pos);
     		kfree(tmp);
   	}
+	spin_unlock(&lock);
 
 	//Delete Workqueue
-	_del_workqueue();
+	cancel_delayed_work(&updater);
+	flush_workqueue(queue);
+	destroy_workqueue(queue);
+	
+	//V-freeing memory buffer space
+	vfree((void*) memory_buffer);
 
 	printk(KERN_ALERT "MP2 MODULE UNLOADED\n");
 }

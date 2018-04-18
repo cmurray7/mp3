@@ -37,6 +37,7 @@ typedef struct mp3_task_struct{
 } mp3_task_struct;
 
 /* structure initialization */
+// Filesystem variables
 static struct proc_dir_entry *proc_dir;
 static struct proc_dir_entry *proc_entry;
 
@@ -45,17 +46,17 @@ static mp3_task_struct mp3_task_struct_list;
 static mp3_task_struct *tmp;
 static struct list_head *pos, *q;
 
-
 // Work variables
 static void update_runtimes(struct work_struct *w);
 DECLARE_DELAYED_WORK(updater, update_runtimes);
 static struct workqueue_struct *queue;
 unsigned long delay;
 
-// Memory buffer variable
+// Memory buffer variables
 unsigned long * memory_buffer;
+int mb_ptr = 0;
 
-// Semaphore Lock
+// Lock
 static spinlock_t lock;
 
 /*
@@ -91,7 +92,28 @@ static unsigned long _get_time(void){
 
 static void update_runtimes(struct work_struct *w)
 {
+	unsigned long utime, stime, major_faults, minor_faults;
+	unsigned long all_major_faults = 0;
+	unsigned long all_minor_faults = 0;
+	unsigned long all_cpu_time = 0;
+
 	printk(KERN_INFO "Update runtimes worker called\n");	
+	
+	spin_lock(&lock);
+	list_for_each_entry(tmp, &mp3_task_struct_list.task_node, task_node) {
+		
+		if( get_cpu_use(tmp->pid, &minor_faults, &major_faults, &utime, &stime) ==  -1) {
+			continue;
+		}
+		
+		printk(KERN_INFO "%d: %lu, %lu, %lu\n", tmp->pid, minor_faults, major_faults, utime+stime);
+		all_major_faults += major_faults;
+		all_minor_faults += minor_faults;
+		all_cpu_time += (utime+stime);
+	}	
+	spin_unlock(&lock);
+
+
 }
 
 static mp3_task_struct* _get_task_by_pid(unsigned int pid)

@@ -8,6 +8,7 @@
 #include <linux/vmalloc.h>
 #include <linux/sched.h>
 #include <linux/workqueue.h>
+#include <linux/cdev.h>
 #include "mp3_given.h"
 
 MODULE_LICENSE("GPL");
@@ -36,7 +37,8 @@ typedef struct mp3_task_struct{
 	
 } mp3_task_struct;
 
-/* structure initialization */
+/* initialization */
+
 // Filesystem variables
 static struct proc_dir_entry *proc_dir;
 static struct proc_dir_entry *proc_entry;
@@ -56,40 +58,28 @@ unsigned long delay;
 unsigned long * memory_buffer;
 int mb_ptr = 0;
 
+// Character Driver variables
+struct cdev chrdev;
+
 // Lock
 static spinlock_t lock;
 
-/*
-//Initializes Work Queue
-static void _init_workqueue(void)
+/* Helper function to locate mp3_task_struct by PID */
+static mp3_task_struct* _get_task_by_pid(unsigned int pid)
 {
-  queue = create_workqueue("mp3_workqueue");
+    	list_for_each_entry(tmp, &mp3_task_struct_list.task_node, task_node) {
+        	if (tmp->pid == pid) {
+            		return tmp;
+        	}
+    	}	
+    	return NULL;
 }
-*/
 
-/*
-// Deletes Work Queue
-static void _del_workqueue(void)
-{
-  if (queue != NULL){
-    flush_workqueue(queue);
-    
-    // Implement the following for any delayed work
-    // cancel_delayed_work_sync(&work);
-    destroy_workqueue(queue);
-    queue = NULL;
-    printk(KERN_ALERT "DELETED WORKQUEUE\n");
-  }
-}
-*/
-/*
-static unsigned long _get_time(void){
-   struct timeval time;
-   do_gettimeofday(&time);
-   return usecs_to_jiffies(time.tv_sec * 1000000L + time.tv_usec);
-}
-*/
-
+/**
+* Delayed work function that update CPU stats and writes
+* them to memory buffer. 
+* Also, queues next update call.
+**/
 static void update_runtimes(struct work_struct *w)
 {
 	unsigned long utime, stime, major_faults, minor_faults;
@@ -112,20 +102,52 @@ static void update_runtimes(struct work_struct *w)
 		all_cpu_time += (utime+stime);
 	}	
 	spin_unlock(&lock);
+	
+	printk(KERN_INFO "Printing to memory buffer: %lu\t%lu\t%lu\t%lu\n", jiffies, all_minor_faults, all_major_faults, (unsigned long) jiffies_to_msecs(cputime_to_jiffies(all_cpu_time)));
 
+	spin_lock(&lock);
+	memory_buffer[mb_ptr++] = jiffies;
+	memory_buffer[mb_ptr++] = all_minor_faults;
+	memory_buffer[mb_ptr++] = all_major_faults;
+	memory_buffer[mb_ptr++] = (unsigned long) jiffies_to_msecs(cputime_to_jiffies(all_cpu_time));
+	spin_unlock(&lock);
+
+	printk(KERN_INFO "Now memory buffer pointer is %d\n", mb_ptr);
+
+	if (mb_ptr>(PAGENUMBER*PAGESIZE)/sizeof(unsigned long)) {
+		printk(KERN_ALERT "Exceeded capacity of memory buffer, resetting to 0\n");
+		mb_ptr = 0;
+	}
+	
+	queue_delayed_work(queue, &updater, delay);
 
 }
+/**
+* Device Driver Definitions
+**/
+static int mp3_open(struct inode *inode, struct file *filp){return 0;}
+static int mp3_release(struct inode *inode, struct file *filp){return 0;}
 
-static mp3_task_struct* _get_task_by_pid(unsigned int pid)
+static int mp3_mmap(struct file *file, struct vm_area_struct *vma)
 {
-    	list_for_each_entry(tmp, &mp3_task_struct_list.task_node, task_node) {
-        	if (tmp->pid == pid) {
-            		return tmp;
-        	}
-    	}	
-    	return NULL;
+	printk(KERN_INFO "mmap called\n");
+	return 0;
 }
 
+static struct file_operations mp3_fops = {
+	.open = mp3_open,
+	.release = mp3_release,
+	.mmap = mp3_mmap,
+	.owner = THIS_MODULE,
+};
+
+/**
+* Takes in character buffer holding PID,
+* initializes zero-usage altered PCB and
+* adds to task list.
+* If this is frist task on list, starts the 
+* periodic workqueue job.  
+**/ 
 void mp3_register_process(char *buf)
 {
 	unsigned int pid;
@@ -153,6 +175,13 @@ void mp3_register_process(char *buf)
 
 }
 
+/**
+* Takes in character buffer holding PID, 
+* locates altered PCB of this PID from task
+* list and removes it from list. 
+* If that empties task list, stops the periodic 
+* workqueue jobs
+**/
 void mp3_unregister_process(char *buf)
 {
 	unsigned int pid;
@@ -176,6 +205,10 @@ void mp3_unregister_process(char *buf)
 
 }
 
+/**
+* Proc Filesystem read callback
+* Lists registered tasks to console
+**/
 ssize_t mp3_read(struct file *file, char __user *buffer, size_t count, loff_t *data)
 {
    
@@ -203,6 +236,12 @@ ssize_t mp3_read(struct file *file, char __user *buffer, size_t count, loff_t *d
 	return copied;
 }
 
+/**
+* Proc Filesystem write callback
+* takes in a command and pid and 
+* invokes register or unregister
+*  behavior
+**/
 static ssize_t mp3_write(struct file *file, const char __user *buffer, size_t count, loff_t *data)
 {
 	char *buf;
@@ -239,8 +278,10 @@ static const struct file_operations mp3_file =
    .write = mp3_write,
 };
 
+int dev_no;
 int __init mp3_init(void)
 {
+
 	printk(KERN_ALERT "LOADING MP2 MODULE\n");
 	
 	// Allocate virtually continuous memory buffer
@@ -267,11 +308,17 @@ int __init mp3_init(void)
 		return -ENOMEM;
 	}
 
-	// Initialize spin lock, work queue
+	// Initialize task list, lock, workqueue, character driver
   	INIT_LIST_HEAD(&mp3_task_struct_list.task_node); 
+
 	spin_lock_init(&lock);
+
 	queue = create_workqueue("mp3_workqueue");
 	delay = msecs_to_jiffies(50);
+
+	cdev_init(&chrdev, &mp3_fops);
+	dev_no = register_chrdev(0, "MP3", &mp3_fops); 
+	printk(KERN_ALERT "CHARACTER DEVICE NUMBER: %d\n", dev_no);	
 
 	printk(KERN_ALERT "MP2 MODULE LOADED\n");
 	return 0;
@@ -295,11 +342,14 @@ void __exit mp3_exit(void)
   	}
 	spin_unlock(&lock);
 
+	// Delete character driver from kernel
+	unregister_chrdev(dev_no, "MP3");
+
 	//Delete Workqueue
 	cancel_delayed_work(&updater);
 	flush_workqueue(queue);
 	destroy_workqueue(queue);
-		
+
 	//V-freeing memory buffer space
 	vfree((void*) memory_buffer);
 

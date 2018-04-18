@@ -118,12 +118,13 @@ void mp3_register_process(char *buf)
 	tmp->task = find_task_by_pid(tmp->pid);
 
 	spin_lock(&lock);
-	list_add_tail(&(tmp->task_node), &(mp3_task_struct_list.task_node));
 
         if (list_empty(&mp3_task_struct_list.task_node)) {
                 queue_delayed_work(queue, &updater, delay);
 		printk(KERN_INFO "First thing in list--new job added\n");
         }
+
+	list_add_tail(&(tmp->task_node), &(mp3_task_struct_list.task_node));
 	spin_unlock(&lock);
 
 	printk(KERN_INFO "Completed registration\n");
@@ -276,7 +277,7 @@ void __exit mp3_exit(void)
 	cancel_delayed_work(&updater);
 	flush_workqueue(queue);
 	destroy_workqueue(queue);
-	
+		
 	//V-freeing memory buffer space
 	vfree((void*) memory_buffer);
 

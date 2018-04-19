@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define N_ITERATION 20
 
@@ -46,6 +47,11 @@ int main(int argc, char* argv[])
   int i, j, k;
   int locality;
   int naccess;
+
+  clock_t start, end;
+  double cpu_time_used;
+
+  start = clock();
 
   if(argc<4){
     printf("usage: work <memsize in MB> <locality: R for Random or T for Temporal> <# of memory accesses per iteration>");
@@ -115,5 +121,10 @@ int main(int argc, char* argv[])
   // 5. Unregister itself to stop the profiling
   sprintf(cmd, "echo 'U %u'>//proc/mp3/status", mypid);
   system(cmd);
+
+  end = clock();
+  cpu_time_used = (double) (end - start);
+  printf("Time used: %f\n", cpu_time_used);
 }
+
 
